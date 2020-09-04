@@ -1,0 +1,176 @@
+---
+title: "Untitled"
+author: "José Fernando Zea"
+date: "3/9/2020"
+output: html_document
+---
+
+```{r}
+library(ggplot2)
+library(dplyr)
+library(TeachingSampling) # datos de ejemplo LUCY
+library(rsample)
+
+```
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+$$\hat{Y}_i = \hat{\beta}_0+\hat{\beta_1}x_i+ \hat{\alpha_2}Versicolor+\hat{\alpha_3}Virginica+\hat{\gamma_2}Versicolor_ix_i +\hat{\gamma_3}Virgninica_ix_i$$,
+
+$i = 1\ldots n$
+```{r}
+plot(iris$Sepal.Length, iris$Petal.Length, pch = 20)
+
+ggplot(data = iris, aes(x = Sepal.Length, y = Petal.Length, colour = Species)) + xlim(0,10)+
+geom_point() +  geom_smooth(method = "lm")
+
+```
+
+
+```{r}
+summary(lm(Petal.Length ~ Sepal.Length, data = iris))
+
+```
+
+```{r}
+modelo2 <- lm(Petal.Length ~ Sepal.Length * Species, data = iris)
+#modelo2 <- lm(Petal.Length ~ Sepal.Length + Species + Sepal.Length:Species , data = iris)
+
+modelo2 %>% summary()
+```
+
+Paso a paso: creando las dummies
+
+```{r}
+iris$versicolor <- ifelse(iris$Species == "versicolor", 1, 0)
+iris$virginica <- ifelse(iris$Species == "virginica", 1, 0)
+```
+
+```{r}
+modelo2 <- lm(Petal.Length ~ Sepal.Length + versicolor + virginica +
+                Sepal.Length * versicolor + Sepal.Length * virginica, data = iris)
+summary(modelo2)
+```
+
+
+
+Reto Kaggle: 
+```{r}
+setwd("C:/Users/Home/Documents/Laboral2020/Konrad Lorenz/Semestre2/MachineLearning")
+s11 <- read.delim("s11_2019I.txt", sep = "|") 
+```
+
+```{r}
+# Ajustar modelo 
+modelo <- lm(PUNT_MATEMATICAS ~ PUNT_INGLES + PUNT_C_NATURALES + FAMI_TIENEINTERNET +
+             COLE_JORNADA + COLE_NATURALEZA, data = s11)
+mean((s11$PUNT_MATEMATICAS - modelo$fitted.values)^2) #MSE
+sqrt(mean((s11$PUNT_MATEMATICAS - modelo$fitted.values)^2) #RMSE
+)
+```
+
+
+# Proceso de muestreo para realizar predicciones
+
+* Muestra de aprendizaje: entrena el modelo
+
+* Muestra de prueba: se verifican las metricas de error de los modelos.
+
+
+```{r}
+data(Lucy)
+```
+
+Seleccionemos una muestra training (70%) y seleccionemos una muestra test (30%)
+
+* Ambas muestras deben ser estadisticamente iguales en la Y en las variables explicativas (covariables)
+
+
+```{r}
+set.seed(12345)
+sample(5, 2)
+a <- c(1,2, 50, 3)
+a[-c(2,3)]
+```
+
+
+```{r}
+set.seed(30820)
+indica_muestra <- sample(2396, round(0.7 * 2396))
+training <- Lucy[indica_muestra,]
+test <- Lucy[-indica_muestra,]
+```
+
+Validar la igualdad "estadística de las diferentes covariables:
+
+```{r}
+training$tipo <- "train"
+test$tipo <- "test"
+df <- bind_rows(training, test)
+ggplot(data = df, aes(x = Income, colour = tipo)) + geom_density()
+```
+```{r}
+ggplot(data = df, aes(x = Employees, colour = tipo)) + geom_density()
+tapply(df$Income, df$tipo, mean)
+```
+```{r}
+ggplot(data = df, aes(x = tipo, fill = Level)) + geom_bar()
+
+```
+
+
+# Entrenar el modelo con la muestra train y validarlo con la muestra test
+Objetivo: pronosticar el ingreso en términos de las otras covariables (variables indepen.):
+
+```{r}
+modelo1 <- lm(Income ~ Taxes + Employees + factor(Level) +
+              factor(Zone) + factor(SPAM), data = Lucy)
+# No tiene sentido evaluar en la misma muestra de entramiento
+#summary(modelo1)
+```
+
+```{r}
+test$yhat <- predict(modelo1, test)
+plot(test$Income, test$yhat, pch = 20)
+abline(a = 0, b = 1, col = "red")
+```
+
+```{r}
+rmse <- sqrt(mean((test$Income -  test$yhat)^2))
+rmse
+```
+
+
+```{r}
+modelo2 <- lm(Income ~ Taxes * Employees + factor(Level) +
+              factor(Zone) + factor(SPAM), data = training)
+# No tiene sentido evaluar en la misma muestra de entramiento
+#summary(modelo1)
+```
+
+
+```{r}
+test$yhat2 <- predict(modelo2, test)
+plot(test$Income, test$yhat2, pch = 20)
+abline(a = 0, b = 1, col = "red")
+```
+
+```{r}
+rmse <- sqrt(mean((test$Income -  test$yhat2)^2))
+rmse
+```
+
+
+```{r}
+set.seed(30920)
+training_s11 <- s11[sample(nrow(s11),round(nrow(s11) * 0.7)),]
+test_s11 <- s11[-sample(nrow(s11),round(nrow(s11) * 0.7)),]
+# nrow(training_s11 ) + nrow(test_s11)
+# dim(s11)
+
+saveRDS(training_s11 , "training_s11_primerSestreJueves.rds")
+saveRDS(test_s11 , "test_s11_primerSestreJueves.rds")
+```
+
