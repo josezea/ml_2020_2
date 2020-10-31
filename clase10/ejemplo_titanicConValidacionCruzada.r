@@ -42,7 +42,8 @@ matriz_confusion(titanic_test, treev2, "Survived")
 table(titanic_test$Survived, predict(reglog, titanic_test, type = "response")>0.5 )
 
 
-# COn tidymodels
+# Con Tidymodels
+
 titanic_training$Survived <- factor(titanic_training$Survived)
 modelo_tree <- decision_tree(mode = "classification") %>%
   set_engine(engine = "rpart")
@@ -72,9 +73,9 @@ validacion_fit <- fit_resamples(
   # El objeto recipe no tiene que estar entrenado
   preprocessor = recipe(
     formula = Survived ~ Pclass + Sex + Age + SibSp, 
-    data =  titanic_training),
+    data =  titanic_training), # %>% step_scale(),
     resamples    = cv_folds,
-   metrics      = metric_set(roc_auc, pr_auc, accuracy),
+   metrics      = metric_set(roc_auc, pr_auc, accuracy, sens, spec, kap),
   control      = control_resamples(save_pred = TRUE)
 )
 validacion_fit
@@ -97,4 +98,7 @@ predicciones %>% head()
 
 mc <- table(y = titanic_test$Survived, yhat = predicciones$.pred_class)
 sum(diag(mc)) / sum(mc)
+
+
+df_pred <- data.frame(y = titanic_test$Survived, yhat = predicciones$ .pred_class)
  
