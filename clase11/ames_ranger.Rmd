@@ -1,0 +1,253 @@
+---
+title: "Optimización de parámetros de un modelo mediante grillas"
+author: "José Fernando Zea y Fernando López-Torrijos"
+date: "Noviembre de 2020"
+output: html_document
+---
+
+# Introducción
+
+Se ha expuesto la teoría alrededor de un sólo árbol y sobre el ensamble de árboles a partir del bootstrap aggregating o baggin.
+
+Se expone a continuación un ejemplo en donde se desea resaltar la técnica de optimización de parámetros o *tuning*
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo=TRUE)
+```
+
+```{r, include=FALSE}
+library(ranger)
+library(AmesHousing)
+library(tidymodels)
+library(conflicted)
+```
+
+La base de datos a utilizar para exponer el tema es una ya trabajada: precio de venta y características de inmuebles vendidos de 2006 a 2010 en Ames, Iowa, Estados Unidos.
+
+Como siempre, se prepara la partición de los datos en entrenamiento y prueba.
+
+```{r}
+options(scipen=999)
+rm(list = ls())
+ames <- make_ames()
+ames$Sale_Price <- log(ames$Sale_Price)
+attr(ames, 'spec') <- NULL # Elimina los atributos del data frame
+set.seed(123)
+ames_train <- initial_split(ames, 0.7) %>% training()
+set.seed(123)
+ames_test <- initial_split(ames, 0.7) %>% testing()
+```
+
+
+```{r}
+n_features <- length(setdiff(names(ames_train), 'Sale_Price'))
+```
+
+El número de variables predictoras es `r n_features`.
+
+La mayoría de ejemplos en Internet hacen uso del paquete *rpart* para aplicar la técnica de *Random Forest*, no obstante, el paquete optimizado en velocidad es el que corresponde a la librería *ranger*^[Aunque hay que estar atentos al paquete anexo a tidymodels denominado *baguette*, el cual promete tener funciones eficientes para baggin para modelos basados en árboles (CART) y reglas (C5). Adicionalmente indica que sus ecuaciones de predicción se almacenan en un formato eficiente para reducir el tamaño de los objetos del modelo.]. Se inicia con los parámetros por defecto.
+
+```{r}
+ames_rf1 <- ranger(Sale_Price ~ .,
+    data=ames_train, seed=123, respect.unordered.factors = 'order')
+```
+
+Se predice sobre el conjunto de datos de prueba:
+
+```{r}
+pred1 <- predict(ames_rf1, data=ames_test)$predictions
+plot(ames_test$Sale_Price , pred1, xlab = 'Precio de venta', 
+     ylab = 'Predicción', main = 'Modelo con parámetros por defecto',
+     cex.main = 0.8, cex.lab = 0.8, cex.axis = 0.8)
+abline(a=0, b=1, col='red')
+```
+
+¿Cuál es la métrica base de los parámetros por defecto?
+
+```{r}
+# RMSE
+sqrt(mean((ames_test$Sale_Price - pred1)^2))
+```
+
+
+```{r}
+dim(ames_train)
+dim(ames_test)
+```
+
+Una validación cruzada, siempre es una mejor estrategia de determinación de la métrica.
+
+```{r receta1}
+ames_vfold <- vfold_cv(ames_train, v= 3, repeats=1)
+
+ames_recipe <- recipe(Sale_Price ~ ., data=ames_train) %>%
+    step_other(Neighborhood, House_Style, threshold = 0.05) %>%
+    step_BoxCox(Lot_Area) %>%
+    step_normalize(all_predictors(), -all_nominal()) %>%
+    step_dummy(all_nominal())
+
+verifica <- ames_recipe %>% summary()
+
+table(verifica$role, useNA='always')
+```
+
+Observe que se solicitó un resumen de la receta. Tiene un campo muy particular: el rol^[Importancia extraída de  https://recipes.tidymodels.org/articles/Roles.html]. 
+
+```{r}
+ames_juiced <- ames_recipe %>% prep() %>% juice()
+dim(ames_juiced)
+```
+
+Convertir en dummies los niveles de las variables nominales hace crecer el número de variables mucho!
+
+Esta es la forma usual de armar un random forest, incluida una parametrización:
+
+```{r}
+rand_forest(mtry=3, trees=500, min_n=5) %>%
+ set_mode('regression') %>%
+ set_engine('ranger', importance='impurity_corrected', seed=123)
+```
+
+Pero se desean optimizar *(tuning)* los parámetros. Se utilizará tidymodels, una buena manera de repasar las diferentes piezas que conforman un flujo de trabajo de Machine Learning en R.
+
+Se inicia con la definición el modelo^[Para el paquete *ranger*, los parámetros se denominan diferente. Por ejemplo, *trees* es *num.trees*. Tidymodels lo que realiza es una conversión para estandarizar el nombre de los parámetros entre los diferentes paquetes que aplican la técnica de random forest]:
+
+```{r rf_model} 
+rf_model <- rand_forest(mtry=tune(), trees=tune(), min_n=tune()) %>%
+    set_mode('regression') %>%
+    set_engine('ranger', importance='impurity_corrected',
+               respect.unordered.factors='order', seed=123)
+
+parameters(rf_model)
+```
+
+La función informa que falta fijar los parámetros que se especificaron para optimizar (*tune()*). Las opciones válidas son:
+
+```{r}
+mtry()
+trees()
+min_n()
+```
+
+Un breve paréntesis. Una opción interesante en las recetas es *fijar* el rol de cada variable, con el objeto de aplicar transformaciones específicas a las variables que tienen dicho rol mediante la función *update_role()*:
+
+```{r receta2}
+ames_recipe2 <-
+    recipe(Sale_Price ~ ., data=ames_train)  %>%
+    update_role(all_nominal(), new_role='id') %>% 
+    step_other(Neighborhood, House_Style, threshold = 0.05) %>%
+    step_BoxCox(Lot_Area) %>%
+    step_normalize(all_predictors(), -all_nominal()) %>%
+    step_dummy(all_nominal())
+
+verifica <- ames_recipe2 %>% summary()
+
+table(verifica$role, useNA='always')
+```
+
+Se observa el nombre de los roles dados. 
+
+```{r}
+ames_recipe2 %>% parameters() 
+```
+
+Por el momento no hay variables a *optimizar*.
+
+Se arma el flujo de trabajo, con las especificaciones dadas: modelo y receta de transformación de las variables.
+
+```{r}
+rf_wflow <- workflow() %>%
+    add_model(rf_model) %>%
+    add_recipe(ames_recipe2)
+rf_wflow
+```
+
+Para optimizar se define una grilla que define el límite mínimo y máximo para cada variable a optimizar y cuántos valores intermedios:
+
+```{r}
+rf_param <- rf_wflow %>% parameters() %>%
+    update(mtry=mtry(range=c(5L, 40L)), trees=trees(range(500L, 2500L)), min_n=min_n(range(1L, 10L)))
+rf_grid <- grid_regular(rf_param, levels=c(8, 10, 5))
+```
+
+Este es la parte inicial de la grilla definida:
+
+```{r}
+head(rf_grid, 50)
+```
+
+Realizar *n* árboles, dónde n podría ser 500 ó más, es exigente en tiempo de computo, aún más cuando se realiza la grilla, es decir, un random forest por cada opción de la misma. Esta grilla cuenta con `r nrow(rf_grid)` combinaciones. Por tanto, es útil poder trabajar en paralelo. Se resuelve cargando las librerías *doFuture* y *ParallelLogger* y se establecen los respectivos parámetros:
+
+```{r message=FALSE, warning=FALSE}
+library(doFuture)
+library(ParallelLogger)
+all_cores <- parallel::detectCores(logical=TRUE)
+
+registerDoFuture()
+cl <- makeCluster(all_cores)
+plan(future::cluster, workers=cl)
+```
+
+La función *tune_grid()* generará problemas, o incluso parará, si no se ha establecido el rol de cada variable, tema que se explicó un poco más atrás. Se procede a optimizar los parámetros:
+
+```{r tune_grid, message=FALSE, warning=FALSE}
+rf_search <- tune_grid(rf_wflow, grid=rf_grid, 
+                resamples=ames_vfold, param_info=rf_param)
+show_best(rf_search, 'rmse', n=9)
+```
+
+Obsérvese que el RMSE basado en la validación cruzada es más alta que la obtenida probando sólo sobre el conjunto de prueba, como suele ser usual.
+
+Hay tres maneras de elegir la mejor métrica:
+
+- select_best(), que encuentra la combinación de parámetros de ajuste con los mejores valores de rendimiento.
+
+- select_by_one_std_err(), que usa la *regla de error de un estándar* que selecciona el modelo más simple dentro de un error estándar de los resultados óptimos numéricamente. Se debe especificar una variable respecto a la cual calcularlo.
+
+- select_by_pct_loss(), que selecciona el modelo más simple cuya pérdida de rendimiento está dentro de algún límite aceptable.
+
+```{r}
+select_best(rf_search, metric='rmse')
+select_by_one_std_err(rf_search, mtry, metric='rmse')
+select_by_one_std_err(rf_search, trees, metric='rmse')
+select_by_one_std_err(rf_search, min_n, metric='rmse')
+rf_param_final <- select_best(rf_search, metric='rmse')
+```
+
+Se finaliza el flujo de trabajo, asignándole el parámetro elegido:
+
+```{r}
+rf_wflow_final <- finalize_workflow(rf_wflow, rf_param_final)
+```
+
+Y se ajusta el modelo, con el objeto de dejarlo listo para pronosticar sobre la partición de prueba.
+
+```{r}
+rf_wflow_final_fit <- fit(rf_wflow_final, data=ames_train)
+```
+
+Es posible guardar en un objeto la *receta de transformaciones* realizada al conjunto de entrenamiento para aplicarla luego al de prueba. Así mismo el modelo ajustado:
+
+```{r}
+ames_recipe3 <- pull_workflow_prepped_recipe(rf_wflow_final_fit)
+rf_final_fit <- pull_workflow_fit(rf_wflow_final_fit)
+```
+
+Se aplica al conjunto de prueba:
+
+```{r}
+ames_test$.pred <- predict(rf_final_fit, 
+         new_data=bake(ames_recipe3, ames_test))$.pred
+```
+
+```{r}
+sqrt(mean((ames_test$Sale_Price - ames_test$.pred)^2))
+```
+
+Realizando una grilla más fina tal vez se obtendría una mejor métrica. Pero se debe evaluar si el tiempo de cómputo vale la pena respecto a la mejora.
+
+```{r}
+plot(ames_test$Sale_Price, ames_test$.pred, xlab = 'Precio de venta', 
+     ylab = 'Predicción', main = 'Modelo con parámetros de acuerdo a la optimización',
+     cex.main = 0.8, cex.lab = 0.8, cex.axis = 0.8)
+```
