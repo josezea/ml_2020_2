@@ -40,6 +40,7 @@ Anteriormente se utilizó la regresión logística para clasificar dos tipos de 
 data(iris)
 
 # Se definen los conjuntos de entrenamiento y validación 
+set.seed(12345)
 indices_entrenamiento <- sample(1:nrow(iris), 0.7 * nrow(iris))
 indices_prueba <- setdiff(1:nrow(iris), indices_entrenamiento)
 
@@ -53,9 +54,17 @@ Con los conjuntos de entrenamiento y validación separados se prosigue a realiza
 
 ```{r message = FALSE, warning = F}
 library(nnet)
-mod_1 = nnet(Species ~ ., datos_entrenamiento, size = 3)
+set.seed(12345)
+mod_1 = nnet(Species ~ ., datos_entrenamiento, size = 3, maxit = 1000)
 ```
 Se puede observar que para poder ajustar la red neuronal tuvieron que hacerse 100 iteraciones. Una vez realizado el ajuste del modelo, se realiza la predicción sobre el conjunto de información de prueba. 
+
+```{r}
+prediction = predict(mod_1, datos_prueba, type = "raw")
+rowSums(prediction)
+```
+
+
 ```{r}
 prediction = predict(mod_1, datos_prueba, type = "class")
 real_class = datos_prueba$Species
@@ -63,6 +72,23 @@ cat("Matriz de Confusión: \n")
 
 table(prediction, real_class)
 ```
+
+
+```{r}
+library(nnet)
+set.seed(12345)
+mod_1b = multinom(Species ~ ., datos_entrenamiento, maxit = 10000)
+prediction2 = predict(mod_1b, datos_prueba, type = "class")
+real_class2 = datos_prueba$Species
+cat("Matriz de Confusión: \n")
+
+table(prediction2, real_class2)
+
+```
+
+
+
+
 
 # Ejemplo 2 - Red Neuronal de una capa (Regresión)
 
@@ -77,21 +103,6 @@ concreto = read_excel("concreto.xls")
 
 Debido a que los datos poseen diferentes rangos, es importante realizar un proceso de normalización para evitar que los optimizadores tomen mucho tiempo en encontrar la solución para los parámetros de la red. 
 
-```{r}
-# Se define una función de normalización. Esta función toma un valor, 
-# le resta el mínimo y la divide por el rango de los datos. De esta forma, 
-# se crea un índice entre 0 y 1. Aplicándola sobre todas las variables, 
-# se deja el conjunto de datos en los mismos rangos. 
-
-normalize = function(x) {
- return((x - min(x)) / (max(x) - min(x)))
-}
-
-concreto = as.data.frame(lapply(concreto, normalize))
-colnames(concreto) = c("cemento", "escoria", "ceniza", "agua", 
-                       "plastif", "grueso", "fino", "edad", "fuerza")
-```
-
 Una vez realizada la normalización sobre las variables, es importante dividir el conjunto de i nformación en entrenamiento y prueba antes de realizar el ajuste del modelo. De esta forma, es posible verificar la capacidad de generalización que tiene. 
 
 ```{r}
@@ -103,7 +114,46 @@ test_index <- setdiff(1:nrow(concreto), train_index)
 
 datos_entrenamiento <- concreto[train_index,]
 datos_prueba <- concreto[test_index,]
+colnames(datos_prueba) = c("cemento", "escoria", "ceniza", "agua", 
+                       "plastif", "grueso", "fino", "edad", "fuerza")
 ```
+
+
+
+
+```{r}
+# Se define una función de normalización. Esta función toma un valor, 
+# le resta el mínimo y la divide por el rango de los datos. De esta forma, 
+# se crea un índice entre 0 y 1. Aplicándola sobre todas las variables, 
+# se deja el conjunto de datos en los mismos rangos. 
+
+minmax = function(x) {
+ return((x - min(x)) / (max(x) - min(x)))
+}
+
+concreto1 = as.data.frame(lapply(datos_entrenamiento, minmax))
+concreto2 <- data.frame(datos_entrenamiento$`Concrete compressive strength(MPa, megapascals)`)
+Datos_entrenamiento <- cbind(concreto1, concreto2) 
+colnames(Datos_entrenamiento) = c("cemento", "escoria", "ceniza", "agua", 
+                       "plastif", "grueso", "fino", "edad", "fuerza")
+```
+
+
+```{r}
+min_train <- sapply(datos_entrenamiento, min)
+max_train <- sapply(datos_entrenamiento, max)
+```
+
+
+```{r}
+for(j in 1:9){
+  datos_prueba[,j] <- (datos_prueba[,j] - min_train[j]) / (max_train[j] - min_train[j])
+}
+```
+
+
+OJO CON LEAKAGE
+
 Teniendo las variables de una manera adecuada, es posible ajustar una red neuronal que tenga una capa oculta con una cantidad arbitraria de neuronas. No hay una fórmula que diga cuántas neuronas deben existir en la capa oculta, por lo que se deja a discresión del investigador (quien puede tomar diferentes valores y ver cuál genera mejores resultados). Por cosa del ejemplo, se utilizarán 5 neuronas para la capa oculta. Para ello se utilizará el paquete \texttt{neuralnet}, que viene con una función para implementar de manera similar a las trabajadas anteriormente.
 
 ```{r}
@@ -111,8 +161,11 @@ library(neuralnet)
 set.seed(1)
 mod_2 <- neuralnet(fuerza ~ cemento + escoria+  ceniza + agua +
                      plastif +  grueso + fino + 
-                     edad,  data = datos_entrenamiento, hidden = 5)
+                     edad,  data = Datos_entrenamiento, hidden = 5)
 ```
+
+
+
 
 Una vez ajustada la red neuronal, es posible visualizarla utilizando la función plot. 
 
@@ -126,12 +179,16 @@ Este gráfico proporciona únicamente métricas sobre el desempeño del modelo u
 
 ```{r}
 # La función compute devuelve las neuronas y las predicciones. 
-resultados = compute(mod_2, datos_prueba[, 1:8])
+resultados = compute(mod_2, datos_prueba)
 fuerza_pred = resultados$net.result
-fuerza = datos_prueba$fuerza
-cat("La correlación entre la predicción y los datos reales es: ")
-cor(fuerza, fuerza_pred)
+fuerza_pred = fuerza_pred * (max_train[9] - min_train[9]) +  min_train[9]
+datos_prueba$fuerza = datos_prueba$fuerza * (max_train[9] - min_train[9]) +  min_train[9]
 
+cat("La correlación entre la predicción y los datos reales es: ")
+cor(fuerza, datos_prueba$fuerza)
+plot(fuerza, fuerza_pred)
+abline(a = 0, b = 1, col = "red")
+sqrt(mean((fuerza_pred - datos_prueba$fuerza)^2))
 ```
 
 La correlación de 0.94 indica que existe una fuerte relación lineal entre los valores predichos y los valores reales, por lo que la red conoce en qué dirección va la relación de las variables. 
@@ -148,7 +205,8 @@ library(h2o)
 h2o.init()
 
 # Toca convertir los dataframe en objetos de h2o
-
+colnames(datos_entrenamiento) = c("cemento", "escoria", "ceniza", "agua", 
+                       "plastif", "grueso", "fino", "edad", "fuerza")
 train.h2o = as.h2o(datos_entrenamiento)
 test.h2o = as.h2o(datos_prueba)
 
@@ -164,8 +222,10 @@ mod_capas <- h2o.deeplearning(y = y.dep,
              # Al poner c(100, 100) se dice que van a haber dos capas ocultas
              # cada una con 100 neuronas. [No tienen que tener la 
              #                          misma cantidad de neuronas]
-             hidden = c(100,100),
+             hidden = c(10),
              activation = "Rectifier",
+            nfolds = 10,
+
              seed = 1234
              )
 
@@ -179,8 +239,20 @@ Como se puede observar, los errores son bastante pequeños en comparación con l
 
 Finalmente, para realizar predicciones y calcular el RMSE de esta red sobre el conjunto de datos de prueba, basta con llamar la función \texttt{h2o.predict}
 
+```{r}
+h2o.performance(mod_capas, test.h2o)
+
+
+```
+
+
 ```{r , results='hide'}
 predictions = h2o.predict(mod_capas, test.h2o)
+```
+
+
+```{r}
+predictions <- as.data.frame(predictions)
 ```
 
 
